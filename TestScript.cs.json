@@ -1,0 +1,11 @@
+{ 
+   "id" : "plugin#0_TestScript", 
+   "enabled" : "true", 
+   "dummy0" : "-0.7955298", 
+   "dummy1" : "0.7137195", 
+   "dummy2" : "0.3801868", 
+   "dummy3" : "0.2717853", 
+   "dummy4" : "-0.7204826", 
+   "pluginLabel" : "", 
+   "filepath" : "D:/SteamLibrary/VaM_Release1.13.0.1/Custom/Scripts/ami/XPStest/TestScript.cs"
+}
