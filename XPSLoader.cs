@@ -115,7 +115,9 @@ namespace XPSLoader
             else
                 m = new Material(Shader.Find(STANDARD_SHADER_NAME));
 
-            foreach(KeyValuePair<int, string> texMap in maps)
+            
+
+            foreach (KeyValuePair<int, string> texMap in maps)
             {                
                     if(textures.Length > texMap.Key) 
                     {
@@ -186,6 +188,8 @@ namespace XPSLoader
         JSONClass pluginJson;
         bool subscene = false;
         public const string xpsRootObjName = "XPS_ROOT";
+        Dictionary<string, Transform> transforms;
+        List<string> transformIds;
 
         public void ModelLoadComplete(List<object> bindings)
         {
@@ -216,6 +220,23 @@ namespace XPSLoader
             }
         }
 
+        private Transform getRescaleObject(Atom atom, bool isSubscene)
+        {
+            if (!isSubscene)
+            {
+                foreach (Transform tt in atom.GetComponentsInChildren<Transform>())
+                {
+                    if (tt.name.Equals("rescaleObject"))
+                        return tt;
+                }
+            }else
+            {
+                return atom.transform.Find("reParentObject").Find("object").Find("reParentObject").Find("object").Find("rescaleObject");                              
+            }
+
+            throw new Exception("No rescaleObject on atom.");
+        }
+     
         public Atom getActualContainingAtom(bool forceSS = false)
         {
             if (this.containingAtom.isSubSceneRestore || subscene || forceSS)
@@ -254,7 +275,7 @@ namespace XPSLoader
                         loadedModel.val = true;
                         prevFolder = FileManagerSecure.GetDirectoryName(path);
                     }
-                    SuperController.singleton.BroadcastMessage("OnActionsProviderAvailable", this, SendMessageOptions.DontRequireReceiver);
+
                 }, "mesh|ascii|xps", prevFolder, true);
 
 
@@ -266,6 +287,16 @@ namespace XPSLoader
                 cleanupUI();
                 loadedModel.val = false;
             });
+
+       /*     CreateButton("Create Autocollider").button.onClick.AddListener(() =>
+            {
+                foreach (SkinnedMeshRenderer sm in smr)
+                {
+                         makeCollider(sm);// XXXX
+                }
+            });
+*/
+ 
         }
 
         private JSONClass extractPluginJSON(JSONNode file, string id)
@@ -310,20 +341,32 @@ namespace XPSLoader
                 string ssPath = null;
 
                 foreach (JSONNode st in subsceneSave.Childs)
-                {
+                {                    
                     if (st["id"].ToString().Equals("\"" + this.containingAtom.subScenePath.TrimEnd('/') + "\""))
                     {
+                        
                         foreach (JSONNode subSt in st["storables"].Childs)
                         {
+
                             if (subSt["id"].ToString().Equals("\"" + this.containingAtom.containingSubScene.storeId + "\""))
                             {
-                                pluginJson = subSt.AsObject;
+                                pluginJson = subSt.AsObject;                               
                                 ssPath = subSt["storePath"];
+                               
                                 break;
                             }
                         }
                         break;
                     }
+                }
+
+                //if ss path!=null and it doesn't contain a / it means its just been made.. have to goto the UI to get where.
+   
+                if (ssPath != null && !ssPath.Contains("/"))
+                {
+                    SubScene subSceneComp = this.containingAtom.containingSubScene;
+                    SubSceneUI subSceneUI = subSceneComp.UITransform.GetComponentInChildren<SubSceneUI>();
+                    ssPath = "Custom/SubScene/" + subSceneUI.creatorNameInputField.text + "/" + subSceneUI.signatureInputField.text + "/" + ssPath;
                 }
 
                 if (ssPath != null && ssPath.Contains("/"))
@@ -349,6 +392,17 @@ namespace XPSLoader
             RestoreModel();
         }
 
+        protected Transform getBoneByName(Transform root, string name)
+        {
+            foreach(Transform kids in root.GetComponentsInChildren<Transform>())
+            {
+                if (kids.name.Equals(name))
+                    return kids;
+            }
+
+            return null;
+        }
+
         public void loadModel(string path, bool restore)
         {
             rootObj = new GameObject(xpsRootObjName);
@@ -358,16 +412,21 @@ namespace XPSLoader
             {
                 filePath.val = path;
                 Load(path, true, rootObj);
-                //   loadedModel.val = true;
-                if (rootObj.transform.parent != null)
-                    rootObj.transform.parent = this.containingAtom.transform;
+                
+                Transform rescaleObj = getRescaleObject(getActualContainingAtom(), subscene);
+
+                rootObj.transform.parent = rescaleObj;
 
                 foreach (SkinnedMeshRenderer sm in smr)
                 {
-                    //     makeCollider(sm);// XXXX
+                         //makeCollider(sm);// XXXX
                 }
 
+                refreshTransforms(subscene);
+                restoreBoneAdjustments();
                 CreateXPSModelUI(restore);
+
+                loadedModel.val = true;
             }
             catch (Exception e)
             {
@@ -376,7 +435,7 @@ namespace XPSLoader
                 Destroy(rootObj);
             }
 
-            rootObj.transform.parent = containingAtom.freeControllers[0].transform;
+         //   rootObj.transform.parent = containingAtom.freeControllers[0].transform;
         }
 
         private void cleanupTransforms()
@@ -392,9 +451,14 @@ namespace XPSLoader
 
         public void cleanupUI()
         {
-            if (uicomp != null)
+            cleanupUIItems(uicomp);
+        }
+
+        public void cleanupUIItems(List<UIDynamic> items)
+        {
+            if (items != null)
             {
-                foreach (UIDynamic uid in uicomp)
+                foreach (UIDynamic uid in items)
                 {
                     if (uid.GetType().Equals(typeof(UIDynamicTextField)))
                     {
@@ -424,7 +488,15 @@ namespace XPSLoader
                 }
             }
 
-            uicomp = null;
+            items = null;
+        }
+
+        protected void flipAllFaces()
+        {
+            foreach(SkinnedMeshRenderer sm in smr)
+            {
+                sm.sharedMesh.triangles = sm.sharedMesh.triangles.Reverse<int>().ToArray();
+            }
         }
 
         public void makeCollider(SkinnedMeshRenderer rr)
@@ -535,15 +607,19 @@ namespace XPSLoader
             armature.transform.rotation = Quaternion.identity;
             //armature.transform.localScale = new Vector3(100f, 100f, 100f);
 
+
             foreach (XNALara.Armature.Bone bn in arma.Bones)
             {
                 GameObject gbn = new GameObject(bn.name);
 
                 bones.Add(bn, gbn);
 
-                gbn.transform.position = bn.absPosition;
-                //gbn.transform.rotation = bn.absTransform.GetRotation();
+
+                gbn.transform.position = new Vector3(-bn.absPosition.x,  bn.absPosition.y , bn.absPosition.z);
+             //   gbn.transform.rotation =  bn.absTransform.GetRotation(); //Quaternion.identity;// 
                 gbn.transform.localScale = bn.relTransform.GetScale();
+
+
 
                 if (bn.id == 0)
                 {
@@ -562,14 +638,23 @@ namespace XPSLoader
                     gbn.transform.parent = bonesList[0];
                 }
 
+/*
+                if (bn.id != 0)
+                {
+                    Vector3 direction = (gbn.transform.position - gbn.transform.parent.position);
+                    gbn.transform.rotation = GetBoneFix(gbn.transform, direction);
+                }*/
+
                 bonesList[bn.id] = gbn.transform;
+
+
 
                 Matrix4x4 invertBindPose = new Matrix4x4();
 
-                if (bn.id == 0)
-                    invertBindPose = gbn.transform.worldToLocalMatrix * armature.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;
-                else
-                    invertBindPose = gbn.transform.worldToLocalMatrix * armature.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * gbn.transform.root.localToWorldMatrix;// ;
+//                if (bn.id == 0)
+  //                  invertBindPose = gbn.transform.worldToLocalMatrix * armature.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;
+    //            else
+                invertBindPose = gbn.transform.worldToLocalMatrix * armature.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * rootObj.transform.localToWorldMatrix;// * gbn.transform.root.localToWorldMatrix;// ;
 
                 bindposes[bn.id] = invertBindPose;
             }
@@ -609,7 +694,6 @@ namespace XPSLoader
             lr.SetPositions(line.ToArray());
         }
 
-
         public Material processTexture(MeshDesc mesh, string path)
         {
             //  
@@ -625,10 +709,14 @@ namespace XPSLoader
                 XPSRenderGroup rg = new XPSRenderGroup(rgNum, param);                
                 m = rg.constructMaterial(mesh.textures, path);
                 renderGroups.Add( m, rg);
-            }else
+                setDefaultMaterialParams(ref m);
+            }
+            else
             {
                 m = XPSRenderGroup.constructFallbackMaterial(mesh.textures, path);
             }
+
+
 
             return m;
         }
@@ -689,7 +777,7 @@ namespace XPSLoader
         {
 
             Mesh MN = new Mesh();
-            if (debugSRM) SuperController.LogMessage("SRM 1");
+
             Vector3[] verts = new Vector3[mesh.vertices.Length];
             Vector3[] norms = new Vector3[mesh.vertices.Length];
             Vector2[] uv = new Vector2[mesh.vertices.Length];
@@ -710,7 +798,7 @@ namespace XPSLoader
             {
                 // verts[i] = bonesList[0].TransformPoint(new Vector3(vin.position.x, vin.position.y, vin.position.z));
                 //norms[i] = bonesList[0].TransformPoint(new Vector3(vin.normal.x, vin.normal.y, vin.normal.z));
-                verts[i] = new Vector3(vin.position.x, vin.position.y, vin.position.z);
+                verts[i] = new Vector3(-vin.position.x, vin.position.y, vin.position.z);
                 norms[i] = new Vector3(vin.normal.x, vin.normal.y, vin.normal.z);
                 uv[i] = new Vector2(vin.texCoords[0].x, vin.texCoords[0].y);
 
@@ -745,7 +833,7 @@ namespace XPSLoader
             if (biggestBoneCount > 4) SuperController.LogMessage("Loading unsupported mesh "+meshNewName+" which has more than 4 boneweights. May not render correctly.");
 
             i = 0;
-            if (debugSRM) SuperController.LogMessage("SRM 2");
+
             foreach (ushort face in mesh.indices)
             {
                 tris[i] = face;
@@ -756,10 +844,10 @@ namespace XPSLoader
             MN.normals = norms;
             MN.bindposes = bindposes;
             MN.boneWeights = weights;
-            MN.triangles = tris.Reverse().ToArray();
+            MN.triangles = tris;//.Reverse().ToArray();
             MN.uv = uv;
-                       
-            if (debugSRM) SuperController.LogMessage("SRM 3 " + meshNewName);
+                      
+
             GameObject gom = new GameObject(meshNewName);
             //GameObject gom = new GameObject(mesh.name);
             
@@ -768,8 +856,8 @@ namespace XPSLoader
             gom.transform.parent = rootObj.transform;
             SkinnedMeshRenderer mf = gom.AddComponent<SkinnedMeshRenderer>();
             mf.sharedMesh = MN;
-            mf.bones = bonesList;            
-
+            mf.bones = bonesList;
+            mf.updateWhenOffscreen = true;
             mf.rootBone = bonesList[0];
             try
             {
@@ -857,56 +945,298 @@ namespace XPSLoader
             return smr;
         }
 
+        private void refreshTransforms(bool forceSS)
+        {
+            refreshTransforms(getActualContainingGOM(forceSS));
+        }
+
+        private void refreshTransforms(GameObject root)
+        {
+            SkinnedMeshRenderer[] smr = root.GetComponentsInChildren<SkinnedMeshRenderer>();
+
+            transformIds = new List<string>();
+            transforms = new Dictionary<string, Transform>();
+
+            foreach (SkinnedMeshRenderer sm in smr)
+            {
+
+                Transform[] tt = sm.bones;
+
+
+                foreach (Transform trans in tt)
+                {
+                    if (trans != null)
+                    {
+                        if (trans.gameObject.GetComponent<Atom>() != null || trans.gameObject.GetComponent<RectTransform>() != null || trans.gameObject.GetComponent<FreeControllerV3>() != null || trans.gameObject.GetComponent<SubAtom>() != null)
+                        {
+                            continue;
+                        }
+
+
+                        if (transforms.ContainsKey(trans.name))
+                        {
+                            if (transforms[trans.name].Equals(trans)) //this is the same bone.. ignore it.
+                                continue;
+                            else //a different bone with the same name, add a uniq version of it.
+                            {
+                                String uniqName = trans.name;
+                                int count = 0;
+                                while (transforms.ContainsKey(uniqName))
+                                {
+                                    uniqName = trans.name + "_" + count;
+                                    count++;
+                                }
+                                transforms.Add(uniqName, trans);
+                                transformIds.Add(uniqName);
+                            }
+                        }
+                        else
+                        {
+                            transforms.Add(trans.name, trans);
+                            transformIds.Add(trans.name);
+                        }
+
+                    }
+                }
+            }
+        }
+
+        private void restoreBoneAdjustments()
+        {
+            Dictionary<string, Vector3> boneRotations = new Dictionary<string, Vector3>();
+            Dictionary<string, Vector3> boneTransforms = new Dictionary<string, Vector3>();
+            Dictionary<string, float> boneScales = new Dictionary<string, float>();
+
+            if (pluginJson != null)
+            {
+                JSONClass arr = pluginJson.AsObject;
+                
+                foreach(string key in arr.Keys)
+                {
+                    string adjKet = key.Split('_')[0];
+                    string boneName;
+                    switch (adjKet)
+                    {
+                        case "xRotBone":
+                            boneName = key.Split('_')[1];
+                            JSONStorableFloat xRotBone = new JSONStorableFloat(key, transforms[boneName].localRotation.x, -180f, 180f, true, true);
+                            RegisterFloat(xRotBone);
+                            boneRotations[boneName] = boneRotations.ContainsKey(boneName) ? new Vector3(arr[key].AsFloat, boneRotations[boneName].y, boneRotations[boneName].z) : new Vector3(arr[key].AsFloat, 0f, 0f);
+                            xRotBone.RestoreFromJSON(pluginJson);
+                            break;
+                        case "yRotBone":
+                            boneName = key.Split('_')[1];
+                            JSONStorableFloat yRotBone = new JSONStorableFloat(key, transforms[boneName].localRotation.y, -180f, 180f, true, true);
+                            RegisterFloat(yRotBone);
+                            boneRotations[boneName] = boneRotations.ContainsKey(boneName) ? new Vector3(boneRotations[boneName].x, arr[key].AsFloat, boneRotations[boneName].z) : new Vector3(0f, arr[key].AsFloat, 0f);
+                            yRotBone.RestoreFromJSON(pluginJson);
+                            break;
+                        case "zRotBone":
+                            boneName = key.Split('_')[1];
+                            JSONStorableFloat zRotBone = new JSONStorableFloat(key, transforms[boneName].localRotation.z, -180f, 180f, true, true);
+                            RegisterFloat(zRotBone);
+                            boneRotations[boneName] = boneRotations.ContainsKey(boneName) ? new Vector3(boneRotations[boneName].x, boneRotations[boneName].y, arr[key].AsFloat) : new Vector3(0f, 0f, arr[key].AsFloat);
+                            zRotBone.RestoreFromJSON(pluginJson);
+                            break;
+
+                        case "xPosBone":
+                            boneName = key.Split('_')[1];
+                            JSONStorableFloat xPosBone = new JSONStorableFloat(key, transforms[boneName].localPosition.x, -5f, 5f, true, true);
+                            RegisterFloat(xPosBone);
+                            boneTransforms[boneName] = boneTransforms.ContainsKey(boneName) ? new Vector3(arr[key].AsFloat, boneTransforms[boneName].y, boneTransforms[boneName].z) : new Vector3(arr[key].AsFloat, transforms[boneName].localPosition.y, transforms[boneName].localPosition.z);
+                            xPosBone.RestoreFromJSON(pluginJson);
+                            break;
+                        case "yPosBone":
+                            boneName = key.Split('_')[1];
+                            JSONStorableFloat yPosBone = new JSONStorableFloat(key, transforms[boneName].localPosition.y, -5f, 5f, true, true);
+                            RegisterFloat(yPosBone);
+                            boneTransforms[boneName] = boneTransforms.ContainsKey(boneName) ? new Vector3(boneTransforms[boneName].x, arr[key].AsFloat, boneTransforms[boneName].z) : new Vector3(transforms[boneName].localPosition.x, arr[key].AsFloat, transforms[boneName].localPosition.z);
+                            yPosBone.RestoreFromJSON(pluginJson);
+                            break;
+                        case "zPosBone":
+                            boneName = key.Split('_')[1];
+                            JSONStorableFloat zPosBone = new JSONStorableFloat(key, transforms[boneName].localPosition.z, -5f, 5f, true, true);
+                            RegisterFloat(zPosBone);
+                            boneTransforms[boneName] = boneTransforms.ContainsKey(boneName) ? new Vector3(boneTransforms[boneName].x, boneTransforms[boneName].y, arr[key].AsFloat) : new Vector3(transforms[boneName].localPosition.x, transforms[boneName].localPosition.y, arr[key].AsFloat);
+                            zPosBone.RestoreFromJSON(pluginJson);
+                            break;
+
+                        case "scaleBone":
+                            boneName = key.Split('_')[1];
+                            JSONStorableFloat scaleBone = new JSONStorableFloat(key, 1f, 0f, 5f, true, true);
+                            RegisterFloat(scaleBone);
+                            boneScales[boneName] = arr[key].AsFloat;
+                            scaleBone.RestoreFromJSON(pluginJson);
+                            break;
+                    }
+
+                }
+
+                foreach(KeyValuePair<string, Vector3> rot in boneRotations)                
+                    transforms[rot.Key].localRotation = Quaternion.Euler(rot.Value);
+
+                foreach (KeyValuePair<string, Vector3> trans in boneTransforms)
+                    transforms[trans.Key].localPosition = trans.Value;
+
+                foreach (KeyValuePair<string, float> scal in boneScales)
+                    transforms[scal.Key].localScale = new Vector3(scal.Value, scal.Value, scal.Value);
+
+            }
+        }
+
+        public List<UIDynamic> createBoneUI(Transform selectedBone)
+        {
+            List<UIDynamic> uiBonecomp = new List<UIDynamic>();
+
+            if (selectedBone != null)
+            {
+                if (uiBonecomp.Count > 0)
+                    cleanupUIItems(uiBonecomp);
+
+                uiBonecomp = new List<UIDynamic>();
+
+                UIDynamicSlider xSlid = createFloatSlider("xRotBone_" + selectedBone.name, "X Bone Rotation", selectedBone.localRotation.x, -180f, 180f, (float val) => { }, false, false);
+                UIDynamicSlider ySlid = createFloatSlider("yRotBone_" + selectedBone.name, "Y Bone Rotation", selectedBone.localRotation.y, -180f, 180f, (float val) => { }, false, false);
+                UIDynamicSlider zSlid = createFloatSlider("zRotBone_" + selectedBone.name, "Z Bone Rotation", selectedBone.localRotation.y, -180f, 180f, (float val) => { }, false, false);
+
+                sliderToJSONStorableFloat[xSlid].setJSONCallbackFunction += delegate (JSONStorableFloat js) { selectedBone.localRotation = Quaternion.Euler(js.val, ySlid.slider.value, zSlid.slider.value);  };
+                sliderToJSONStorableFloat[ySlid].setJSONCallbackFunction += delegate (JSONStorableFloat js) { selectedBone.localRotation = Quaternion.Euler(xSlid.slider.value, js.val, zSlid.slider.value); };
+                sliderToJSONStorableFloat[zSlid].setJSONCallbackFunction += delegate (JSONStorableFloat js) { selectedBone.localRotation = Quaternion.Euler(xSlid.slider.value, ySlid.slider.value, js.val); };
+
+                UIDynamicSlider boneScale = createFloatSlider("scaleBone_"+ selectedBone.name, "Bone Scale", selectedBone.localScale.x, 0f, 5f, (float val) => { }, false, false);
+                boneScale.slider.onValueChanged.AddListener((float val) => { selectedBone.localScale = new Vector3(val, val, val); });
+
+                UIDynamicSlider xPos = createFloatSlider("xPosBone_" + selectedBone.name, "X Bone Position", selectedBone.localPosition.x, -5f, 5f, (float val) => { }, false, false);
+                UIDynamicSlider yPos = createFloatSlider("yPosBone_" + selectedBone.name, "Y Bone Position", selectedBone.localPosition.y, -5f, 5f, (float val) => { }, false, false);
+                UIDynamicSlider zPos = createFloatSlider("zPosBone_" + selectedBone.name, "Z Bone Position", selectedBone.localPosition.z, -5f, 5f, (float val) => { }, false, false);
+            
+                xPos.slider.onValueChanged.AddListener((float val) => { selectedBone.localPosition = new Vector3(val, yPos.slider.value, zPos.slider.value); });
+                yPos.slider.onValueChanged.AddListener((float val) => { selectedBone.localPosition = new Vector3(xPos.slider.value, val, zPos.slider.value); });
+                zPos.slider.onValueChanged.AddListener((float val) => { selectedBone.localPosition = new Vector3(xPos.slider.value, yPos.slider.value, val); });
+
+                uiBonecomp.Add(xSlid);
+                uiBonecomp.Add(ySlid);
+                uiBonecomp.Add(zSlid);
+                uiBonecomp.Add(boneScale);
+                uiBonecomp.Add(xPos);
+                uiBonecomp.Add(yPos);
+                uiBonecomp.Add(zPos);
+
+                uiBonecomp.Add(CreateSpacer());
+            }
+
+            return uiBonecomp;
+        }
+
+        protected void setTexturesDirection(bool up)
+        {
+            if (up)
+            {
+                foreach (Material m in materials)
+                {
+                    if (renderGroups.ContainsKey(m))
+                    {
+                        XPSRenderGroup rg = renderGroups[m];
+
+                        foreach (KeyValuePair<int, string> map in rg.maps)
+                        {
+                            m.SetTextureScale(map.Value, new Vector2(1, -1));
+                        }
+                    }
+                }
+            }
+            else
+            {
+                foreach (Material m in materials)
+                {
+                    if (renderGroups.ContainsKey(m))
+                    {
+                        XPSRenderGroup rg = renderGroups[m];
+
+                        foreach (KeyValuePair<int, string> map in rg.maps)
+                        {
+                            m.SetTextureScale(map.Value, new Vector2(1, 1));
+                        }
+                    }
+                }
+            }
+        }
+
+        const float default_specularIntensityGlobal = 0.2f;
+        const float default_specularSharpnessGlobal = 4f;
+        const float default_specularFresnelGlobal = 0.7f;
+        const float default_diffuseOffsetGlobal = 0f;
+        const float default_specularOffsetlGlobal = 0f;
+        const float default_glossOffsetGlobal = 0.8f;
+        const float default_iblFilterGlobal = 0f;
+        const float default_diffuseBumpinessGlobal = 0.5f;
+        const float default_specularBumpinessGlobal = 0.5f;
+
+        protected void setDefaultMaterialParams(ref Material m)
+        {
+            SetSpecIntensity(m, default_specularIntensityGlobal);
+            SetSpecSharpness(m, default_specularSharpnessGlobal);
+          SetSpecFresnel(m, default_specularFresnelGlobal); 
+         SetDiffOffset(m, default_diffuseOffsetGlobal);
+           SetSpecOffset(m, default_specularOffsetlGlobal); 
+        SetGlossOffset(m, default_glossOffsetGlobal); 
+         SetIBLFilter(m, default_iblFilterGlobal);
+         setMaterialParam(m, "_DiffuseBumpiness", default_diffuseBumpinessGlobal);
+        setMaterialParam(m, "_SpecularBumpiness", default_specularBumpinessGlobal);
+
+        }
+
         public void CreateXPSModelUI(bool restore)
         {
             if (uicomp == null)
                 uicomp = new List<UIDynamic>();
 
+
+            materials = new List<Material>();
+
+            uicomp.Add(CreateLabel("Mesh/Material Settings", true));
+            Dictionary<string, Material> matmap = new Dictionary<string, Material>();
+
+            foreach (SkinnedMeshRenderer sm in smr)
+            {
+                string storableName = "meshEnabled" + sm.name;
+                bool defaultVal = true;
+                if (sm.name.StartsWith("-"))
+                {
+                    defaultVal = false;
+                    sm.enabled = false;
+                }
+
+                uicomp.Add(createToggle(storableName, sm.name, defaultVal, (bool val) => { sm.enabled = val; }, true, restore));
+
+                int matcount = 0;
+                foreach (Material mat in sm.sharedMaterials)
+                {
+                    materials.Add(mat);
+
+                    if (!matmap.ContainsKey(mat.name))
+                        matmap.Add(mat.name, mat);
+
+                    matcount++;
+                }
+
+            }
+
             uicomp.Add(CreateLabel("Transform Settings", false));
 
             Transform xps = rootObj.transform;
 
-            uicomp.Add(createFloatSlider("scaleAdjust", "Scale", xps.localScale.x, 0f,100f,(float val) => { xps.localScale = new Vector3(val, val, val); }, false, restore));
-            uicomp.Add(createFloatSlider("xRot", "X Rotation", xps.localRotation.x,0f,360f, (float val) => { xps.localRotation = Quaternion.Euler(val, xps.localRotation.y, xps.localRotation.z); }, false, restore));
-            uicomp.Add(createFloatSlider("yRot", "Y Rotation", xps.localRotation.y, 0f, 360f, (float val) => { xps.localRotation = Quaternion.Euler(xps.localRotation.x, val, xps.localRotation.z); }, false, restore));
-            uicomp.Add(createFloatSlider("zRot", "Z Rotation", xps.localRotation.z, 0f, 360f, (float val) => { xps.localRotation = Quaternion.Euler(xps.localRotation.x, xps.localRotation.y, val); }, false, restore));
+
+            uicomp.Add(createFloatSlider("scaleAdjust", "Scale", rootObj.transform.localScale.x, 0f,100f,(float val) => { rootObj.transform.localScale = new Vector3(val, val, val); }, false, restore));
+            uicomp.Add(createFloatSlider("xRot", "X Rotation", rootObj.transform.localRotation.x,0f,360f, (float val) => { rootObj.transform.localRotation = Quaternion.Euler(val, rootObj.transform.localRotation.y, rootObj.transform.localRotation.z); }, false, restore));
+            uicomp.Add(createFloatSlider("yRot", "Y Rotation", rootObj.transform.localRotation.y, 0f, 360f, (float val) => { rootObj.transform.localRotation = Quaternion.Euler(rootObj.transform.localRotation.x, val, rootObj.transform.localRotation.z); }, false, restore));
+            uicomp.Add(createFloatSlider("zRot", "Z Rotation", rootObj.transform.localRotation.z, 0f, 360f, (float val) => { rootObj.transform.localRotation = Quaternion.Euler(rootObj.transform.localRotation.x, rootObj.transform.localRotation.y, val); }, false, restore));
 
             uicomp.Add(CreateLabel("Global Material Settings", false));
 
-            uicomp.Add(createToggle("flipTextures", "Flip All Textures", false, (bool val) =>
-            {
-                if (val)
-                {
-                    foreach (Material m in materials)
-                    {
-                        if(renderGroups.ContainsKey(m))
-                        {
-                            XPSRenderGroup rg = renderGroups[m];
-                            
-                            foreach(KeyValuePair<int, string> map in rg.maps)
-                            {
-                                m.SetTextureScale(map.Value, new Vector2(1, -1));
-                            }
-                        }                        
-                    }
-                }
-                else
-                {
-                    foreach (Material m in materials)
-                    {
-                        if (renderGroups.ContainsKey(m))
-                        {
-                            XPSRenderGroup rg = renderGroups[m];
+            uicomp.Add(createToggle("flipTextures", "Flip All Textures", true, (bool val) =>{ setTexturesDirection(val); }, false, restore));
 
-                            foreach (KeyValuePair<int, string> map in rg.maps)
-                            {
-                                m.SetTextureScale(map.Value, new Vector2(1, 1));
-                            }
-                        }
-                    }
-                }
-            }, false, restore));
-            uicomp.Add(createToggle("flipTexturesNormals", "Flip Normals Only", false, (bool val) =>
+            uicomp.Add(createToggle("flipTexturesNormals", "Flip Normals Only", true, (bool val) =>
             {
                 if (val)
                 {
@@ -947,56 +1277,59 @@ namespace XPSLoader
                     }
                 }
             }, false, restore));
+
             uicomp.Add(createFloatSlider("specularIntensityGlobal", "Specular Intensity", 0.2f, (float val) => { foreach (Material m in materials) SetSpecIntensity(m, val); }, false, restore));
             uicomp.Add(createFloatSlider("specularSharpnessGlobal", "Specular Sharpness", 4f, (float val) => { foreach (Material m in materials) SetSpecSharpness(m, val); }, false, restore));
-            uicomp.Add(createFloatSlider("specularFresnelGlobal", "Specular Fresnel", 0f, (float val) => { foreach (Material m in materials) SetSpecFresnel(m, val); }, false, restore));
+            uicomp.Add(createFloatSlider("specularFresnelGlobal", "Specular Fresnel", 0.7f, (float val) => { foreach (Material m in materials) SetSpecFresnel(m, val); }, false, restore));
             uicomp.Add(createFloatSlider("diffuseOffsetGlobal", "Diffuse Offset", 0f, (float val) => { foreach (Material m in materials) SetDiffOffset(m, val); }, false, restore));
             uicomp.Add(createFloatSlider("specularOffsetlGlobal", "Specular Offset", 0f, (float val) => { foreach (Material m in materials) SetSpecOffset(m, val); }, false, restore));
             uicomp.Add(createFloatSlider("glossOffsetGlobal", "Gloss Offset", 0.8f, (float val) => { foreach (Material m in materials) SetGlossOffset(m, val); }, false, restore));
             uicomp.Add(createFloatSlider("iblFilterGlobal", "IBL Filter", 0f, (float val) => { foreach (Material m in materials) SetIBLFilter(m, val); }, false, restore));
-            uicomp.Add(createFloatSlider("diffuseBumpinessGlobal", "Diffuse Bumpiness", 0.2f, (float val) => { foreach (Material m in materials) setMaterialParam(m, "_DiffuseBumpiness", val); }, false, restore));
-            uicomp.Add(createFloatSlider("specularBumpinessGlobal", "Specular Bumpiness", 0.2f, (float val) => { foreach (Material m in materials) setMaterialParam(m, "_SpecularBumpiness", val); }, false, restore));
-            uicomp.Add(createFloatSlider("alphaAdjust", "Alpha Adjust", 0f, (float val) => { foreach (Material m in materials) setMaterialParam(m, "_AlphaAdjust", val); }, false, restore));
-            uicomp.Add(createFloatSlider("_MKGlowPower", "_MKGlowPower", 0f, (float val) => { foreach (Material m in materials) setMaterialParam(m, "_MKGlowPower", val); }, false, restore));
+            uicomp.Add(createFloatSlider("diffuseBumpinessGlobal", "Diffuse Bumpiness", 0.5f, (float val) => { foreach (Material m in materials) setMaterialParam(m, "_DiffuseBumpiness", val); }, false, restore));
+            uicomp.Add(createFloatSlider("specularBumpinessGlobal", "Specular Bumpiness", 0.5f, (float val) => { foreach (Material m in materials) setMaterialParam(m, "_SpecularBumpiness", val); }, false, restore));
 
-            uicomp.Add(CreateLabel("Mesh/Material Settings", true));
+            uicomp.Add(CreateLabel("Rig Settings", false));
+            
+            JSONStorableString editedBones = new JSONStorableString("editedBones", "Edited Bones: ");// null, null,"");
+            RegisterString(editedBones);
+            
+            JSONStorableStringChooser boneAdj = new JSONStorableStringChooser("BoneAdj", null, null, "Select a Bone");
+            //RegisterStringChooser(boneAdj);
 
-            materials = new List<Material>();
+            boneAdj.choices = transformIds;
+            //boneAdj.val = boneName;
 
-            Dictionary<string, Material> matmap = new Dictionary<string, Material>();
+            UIDynamicPopup fp = CreateFilterablePopup(boneAdj);
+            fp.popupPanelHeight = 700f;
+            uicomp.Add(fp);
 
-            foreach (SkinnedMeshRenderer sm in smr)
+            uicomp.Add(CreateSpacer());
+
+            List<UIDynamic> uiBonecomp = new List<UIDynamic>();
+
+            fp.popup.onValueChangeHandlers += delegate (string value)
             {
-                string storableName = "meshEnabled" + sm.name;
-                bool defaultVal = true;
-                if (sm.name.StartsWith("-"))
-                {
-                    defaultVal = false;
-                    sm.enabled = false;
+                if(transforms.ContainsKey(boneAdj.val))
+                { 
+                Transform selectedBone = transforms[boneAdj.val];
+
+                    if (uiBonecomp.Count > 0)
+                        cleanupUIItems(uiBonecomp);
+
+                    uiBonecomp = createBoneUI(selectedBone);
+                    
+                    uicomp.AddRange(uiBonecomp);
+
+                    editedBones.val = editedBones.val + "\n" + value;
                 }
+            };
 
-                uicomp.Add(createToggle(storableName, sm.name, defaultVal, (bool val) => { sm.enabled = val; }, true, restore));
-
-                int matcount = 0;
-                foreach (Material mat in sm.sharedMaterials)
-                {
-                    materials.Add(mat);
-
-                    if (!matmap.ContainsKey(mat.name))
-                        matmap.Add(mat.name, mat);
-
-                    matcount++;
-                }
-               
-            }
-            uicomp.Add(CreateLabel("Material count " + matmap.Count, true));
+                     
+            uicomp.Add(CreateLabel("Material count " + materials.Count, true));            
+            uicomp.Add(CreateTextField(editedBones, true));
             uicomp.Add(CreateSpacer(true));
         }
 
-        protected void ChangeShader()
-        {
-            //m = new Material(Shader.Find("Standard"));
-        }
 
         protected void SetSpecIntensity(Material m, float val)
         {
@@ -1141,7 +1474,7 @@ namespace XPSLoader
 
             for (int vertexID = 0; vertexID < vertexCount; vertexID++)
             {
-                if (debug) SuperController.LogMessage("mesh 1");
+
                 MeshDesc.Vertex vertex = new MeshDesc.Vertex();
                 string[] pos = fileSplit[rowcounter].Split(' ');
 
@@ -1152,7 +1485,7 @@ namespace XPSLoader
                 rowcounter++;
                 vertex.position = new Vector3(positionX, positionY, positionZ);
 
-                if (debug) SuperController.LogMessage("mesh 2");
+
                 string[] norms = fileSplit[rowcounter].Split(' ');
                 float normalX = norms.Length > 0 ? float.Parse(norms[0].Trim()) : 0f;
                 float normalY = norms.Length > 1 ? float.Parse(norms[1].Trim()) : 0f;
@@ -1167,7 +1500,6 @@ namespace XPSLoader
                 float colorA = cols.Length > 3 ? float.Parse(cols[3].Trim()) / 255.0f : 0f;
                 rowcounter++;
                 vertex.color = new Vector4(colorR, colorG, colorB, 1.0f);
-                if (debug) SuperController.LogMessage("mesh 3");
                 vertex.texCoords = new Vector2[uvLayerCount];
                 for (int uvLayerID = 0; uvLayerID < uvLayerCount; uvLayerID++)
                 {
@@ -1179,12 +1511,10 @@ namespace XPSLoader
 
                 vertex.tangents = new Vector4[uvLayerCount];
 
-                if (debug) SuperController.LogMessage("mesh 4");
                 if (hasArmature)
                 {
 
                     string[] bones = fileSplit[rowcounter].Split(' ');
-                    if (debug) SuperController.LogMessage("mesh 5 " + bones.Length + " " + fileSplit[rowcounter]);
                     rowcounter++;
 
                     int boneWeightCount = bones.Length;// > 4 ? bones.Length : 4;
@@ -1204,7 +1534,6 @@ namespace XPSLoader
                     float weightSum = 0;
 
                     string[] boneWeights = fileSplit[rowcounter].Trim().Split(' ');
-                    if (debug) SuperController.LogMessage("mesh 6 " + boneWeights.Length + " " + fileSplit[rowcounter]);
                     rowcounter++;
 
                     for (int i = 0; i < boneWeightCount; i++)
@@ -1213,7 +1542,6 @@ namespace XPSLoader
                         vertex.boneWeights[i] = weight;
                         weightSum += weight;
                     }
-                    if (debug) SuperController.LogMessage("mesh 7");
                     if (weightSum == 0)
                     {
                         vertex.boneWeights[0] = 1.0f;
@@ -1229,7 +1557,6 @@ namespace XPSLoader
                         }
                     }
                     short indexDefault = 0;
-                    if (debug) SuperController.LogMessage("mesh 8");
 
                     for (int i = 0; i < boneWeightCount; i++)
                     {
@@ -1239,7 +1566,6 @@ namespace XPSLoader
                             break;
                         }
                     }
-                    if (debug) SuperController.LogMessage("mesh 9");
                     for (int i = 0; i < boneWeightCount; i++)
                     {
                         short indexGlobal = vertex.boneIndicesGlobal[i];
@@ -1257,7 +1583,6 @@ namespace XPSLoader
                         vertex.boneIndicesLocal[i] = indexLocal;
                     }
                 }
-                if (debug) SuperController.LogMessage("mesh 10");
                 mesh.vertices[vertexID] = vertex;
             }
 
@@ -1351,7 +1676,6 @@ namespace XPSLoader
                     rr = rr + 4;
                     valuesRead++;
 
-                    SuperController.LogMessage("optType " + optType+ " optcount " + optcount+ " optInfo " + optInfo);
                                       
                     if (optType == 0)
                     {
@@ -1391,7 +1715,6 @@ namespace XPSLoader
 
                       //  if (optcount == 0) rr = rr - 1;
 
-                        SuperController.LogMessage("round malt " + roundMult+ " rr " + rr + "add bytes "+ addBytes);
                         }
                     }
                     else if (optType == 2) // flag
@@ -1459,7 +1782,7 @@ namespace XPSLoader
             {
                 return armature;
             }
-            if (debug) SuperController.LogMessage("xps arma 3");
+            
             Armature.Bone[] bones = new Armature.Bone[boneCount];
             int[] parentIDs = new int[boneCount];
             for (int boneID = 0; boneID < boneCount; boneID++)
@@ -1476,7 +1799,7 @@ namespace XPSLoader
                 bone.name = Encoding.UTF8.GetString(file, rr, slength);
                 rr = rr + slength;
 
-                if (debug) SuperController.LogMessage("bone name :" + bone.name);
+                
                 parentIDs[boneID] = BitConverter.ToInt16(file, rr);
                 rr = rr + 2;
 
@@ -1487,7 +1810,7 @@ namespace XPSLoader
                 bone.absPosition = new Vector3(absPosX, absPosY, absPosZ);
                 bones[boneID] = bone;
             }
-            if (debug) SuperController.LogMessage("xps arma 4");
+            
             for (int boneID = 0; boneID < boneCount; boneID++)
             {
                 Armature.Bone bone = bones[boneID];
@@ -1501,7 +1824,7 @@ namespace XPSLoader
             }
             armature.Bones = bones;
             armature.rowcount = rr;
-            if (debug) SuperController.LogMessage("xps arma 5");
+            
             return armature;
         }
 
@@ -1510,7 +1833,7 @@ namespace XPSLoader
             
             int rr = rowcounter_;
             MeshDesc mesh = new MeshDesc();
-            if (debug2) SuperController.LogMessage("xps mesh 1");
+            
             int slength = file[rr]; rr++; if (slength > 127) rr++;
             mesh.name = Encoding.UTF8.GetString(file, rr, slength);
             rr = rr + slength;
@@ -1519,7 +1842,7 @@ namespace XPSLoader
             mesh.uvLayerCount = uvLayerCount;
             uint textureCount = BitConverter.ToUInt32(file, rr); rr = rr + 4;
             mesh.textures = new MeshDesc.Texture[textureCount];
-            if (debug2) SuperController.LogMessage("xps mesh 2");
+            
             for (int textureID = 0; textureID < textureCount; textureID++)
             {
                 MeshDesc.Texture texture = new MeshDesc.Texture();
@@ -1531,12 +1854,12 @@ namespace XPSLoader
                 mesh.textures[textureID] = texture;
 
             }
-            if (debug2) SuperController.LogMessage("xps mesh 3");
+            
             Dictionary<short, short> boneIndexDict = new Dictionary<short, short>();
             List<short> boneIndexMap = new List<short>();
             int vertexCount = BitConverter.ToInt32(file, rr); rr = rr + 4;
             mesh.vertices = new MeshDesc.Vertex[vertexCount];
-            if (debug2) SuperController.LogMessage("xps mesh 4");
+            
             for (int vertexID = 0; vertexID < vertexCount; vertexID++)
             {
                 MeshDesc.Vertex vertex = new MeshDesc.Vertex();
@@ -1641,7 +1964,7 @@ namespace XPSLoader
                 }
                 mesh.vertices[vertexID] = vertex;
             }
-            if (debug2) SuperController.LogMessage("xps mesh 5");
+            
 
             mesh.boneIndexMap = boneIndexMap.ToArray();
             uint faceCount = BitConverter.ToUInt32(file, rr); rr = rr + 4;
@@ -1655,7 +1978,7 @@ namespace XPSLoader
                 mesh.indices[index + 2] = (ushort)BitConverter.ToUInt32(file, rr); rr = rr + 4;
                 index += 3;
             }
-            if (debug2) SuperController.LogMessage("xps mesh 6");
+            
             mesh.rowcount = rr;
 
             return mesh;
@@ -1688,20 +2011,25 @@ namespace XPSLoader
 
         protected UIDynamicSlider createFloatSlider(string name, string displayName, float initialVal, float min, float max,Action<float> settable, bool right, bool restore)
         {
-            JSONStorableFloat settableVal = new JSONStorableFloat(name, initialVal, min, max,false, true);
-            RegisterFloat(settableVal);
-            settableVal.setJSONCallbackFunction += delegate (JSONStorableFloat js) { settable(js.val); };
+            JSONStorableFloat settableVal;
+            if (GetFloatJSONParam(name) == null)
+            {
+                settableVal = new JSONStorableFloat(name, initialVal, min, max, false, true);
+                RegisterFloat(settableVal);                
+            }
+            else
+            {                
+                settableVal = GetFloatJSONParam(name);             
+                //settableVal.val = initialVal;
+            }
+
             if (restore && pluginJson != null)
             {
-                try
-                {
-                    settableVal.RestoreFromJSON(pluginJson);
-                }
-                catch (Exception e) 
-                {//i dont know why this throws an exception but it does.
-                }
+                settableVal.RestoreFromJSON(pluginJson);
+                if (settableVal != null) { settable(settableVal.val); }          
             }
-                        
+            settableVal.setJSONCallbackFunction += delegate (JSONStorableFloat js) { settable(js.val); };
+
             UIDynamicSlider solverPositionWeightslider = CreateSlider(settableVal, right);
             solverPositionWeightslider.labelText.text = displayName;
             return solverPositionWeightslider;
@@ -1709,17 +2037,16 @@ namespace XPSLoader
 
         protected UIDynamic createToggle(string name, string displayName, bool initialVal, Action<bool> settable, bool right, bool restore)
         {
-            JSONStorableBool solverFixTransforms = new JSONStorableBool(name, true);
+            JSONStorableBool solverFixTransforms = new JSONStorableBool(name, initialVal);
             RegisterBool(solverFixTransforms);
-            solverFixTransforms.setJSONCallbackFunction += (delegate (JSONStorableBool js) { settable(js.val); });
-            if (restore && pluginJson != null) { 
-            try
+            if (restore && pluginJson != null)
             {
                 solverFixTransforms.RestoreFromJSON(pluginJson);
-            }
-            catch (Exception e)
-            {//i dont know why this throws an exception but it does.
-            } }
+         
+                if (solverFixTransforms!=null) settable(solverFixTransforms.val);
+            }             
+
+            solverFixTransforms.setJSONCallbackFunction += (delegate (JSONStorableBool js) { settable(js.val); });
             UIDynamicToggle tog = CreateToggle(solverFixTransforms, right);
             tog.labelText.text = displayName;
             return tog;
@@ -1727,19 +2054,15 @@ namespace XPSLoader
 
         protected JSONStorableBool createToggleStorable(string name, bool initialVal, Action<bool> settable, bool right, bool restore)
         {
-            JSONStorableBool solverFixTransforms = new JSONStorableBool(name, true);
+            JSONStorableBool solverFixTransforms = new JSONStorableBool(name, initialVal);
             RegisterBool(solverFixTransforms);
-            solverFixTransforms.setJSONCallbackFunction += (delegate (JSONStorableBool js) { settable(js.val); });
+     
             if (restore && pluginJson != null)
             {
-                try
-                {
-                    solverFixTransforms.RestoreFromJSON(pluginJson);
-                }
-                catch (Exception e)
-                {//i dont know why this throws an exception but it does.
-                }
+                solverFixTransforms.RestoreFromJSON(pluginJson);
+                if (solverFixTransforms != null) settable(solverFixTransforms.val);                
             }
+            solverFixTransforms.setJSONCallbackFunction += (delegate (JSONStorableBool js) { settable(js.val); });
             return solverFixTransforms;
         }
     }

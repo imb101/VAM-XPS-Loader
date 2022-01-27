@@ -1,0 +1,9 @@
+
+*.cache
+.vs/XPSLoader1/v16/.suo
+*.dll
+*.xml
+obj/Debug/XPSLoader.pdb
+obj/Debug/XPSLoader.csproj.FileListAbsolute.txt
+obj/Debug/XPSLoader.csproj.CopyComplete
+bin/Debug/XPSLoader.pdb
