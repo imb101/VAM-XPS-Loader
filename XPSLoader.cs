@@ -288,7 +288,9 @@ namespace XPSLoader
                 loadedModel.val = false;
             });
 
+
        /*     CreateButton("Create Autocollider").button.onClick.AddListener(() =>
+            
             {
                 foreach (SkinnedMeshRenderer sm in smr)
                 {
@@ -846,7 +848,7 @@ namespace XPSLoader
             MN.boneWeights = weights;
             MN.triangles = tris;//.Reverse().ToArray();
             MN.uv = uv;
-                      
+
 
             GameObject gom = new GameObject(meshNewName);
             //GameObject gom = new GameObject(mesh.name);
