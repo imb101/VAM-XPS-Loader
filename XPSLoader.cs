@@ -859,7 +859,7 @@ namespace XPSLoader
             SkinnedMeshRenderer mf = gom.AddComponent<SkinnedMeshRenderer>();
             mf.sharedMesh = MN;
             mf.bones = bonesList;
-            mf.updateWhenOffscreen = true;
+           // mf.updateWhenOffscreen = true;
             mf.rootBone = bonesList[0];
             try
             {
