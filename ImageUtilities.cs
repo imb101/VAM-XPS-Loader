@@ -64,12 +64,12 @@ public static class ImageUtilities
 
         texPath = texPath + "/" + imgPath[imgPath.Length - 1].Trim();
         Texture2D te = new Texture2D(2, 2);
-
+        bool imageLoaded = false;
         try
         {
             if (texPath.ToLower().Contains(".tga"))
             {
-                te = LoadTGA(texPath);
+                te = LoadTGA(texPath);                
             }
             else if (texPath.ToLower().Contains(".dds"))
             {
@@ -85,10 +85,27 @@ public static class ImageUtilities
                 
             }
 
+            imageLoaded = true;
         }
         catch (Exception e) {
-            SuperController.LogError(e.Message);
-            SuperController.LogError(e.StackTrace);
+            imageLoaded = false;
+            //hmm maybe this isnt the format that was specified ? fall back and try to defaul to png/jpg.
+        }
+
+        if(!imageLoaded)
+        {
+            try
+            {
+                 te = loadPNGOrJPG(texPath);
+                imageLoaded = true;
+            }
+            catch (Exception e)
+            {
+                imageLoaded = false;
+                //nope this is fucked.
+                SuperController.LogError(e.Message);
+                SuperController.LogError(e.StackTrace);
+            }
         }
 
         return te;
