@@ -180,6 +180,8 @@ namespace XPSLoader
         public int rowcounter = 0;
         JSONStorableString filePath;
         JSONStorableBool loadedModel;
+        JSONStorableBool autoAddCollider;
+        JSONStorableBool convexCollider;
         List<SkinnedMeshRenderer> smr;
         Dictionary<Material, XPSRenderGroup> renderGroups;
         GameObject rootObj;
@@ -257,6 +259,12 @@ namespace XPSLoader
             loadedModel = new JSONStorableBool("loadedModel", false);
             //RegisterBool(loadedModel);
 
+            autoAddCollider = new JSONStorableBool("autoAddCollider", true);
+            RegisterBool(autoAddCollider);
+
+            convexCollider = new JSONStorableBool("convexCollider", true);
+            RegisterBool(convexCollider);
+
             filePath = new JSONStorableString("filePath", null);//, RestoreModel);
             RegisterString(filePath);
 
@@ -281,6 +289,10 @@ namespace XPSLoader
 
             });
 
+            CreateToggle(autoAddCollider).labelText.text ="Auto Add Collider";
+
+            CreateToggle(convexCollider).labelText.text = "Convex Collider (turn off for envs)";
+
             CreateButton("Clean up").button.onClick.AddListener(() =>
             {
                 cleanupTransforms();
@@ -289,16 +301,15 @@ namespace XPSLoader
             });
 
 
-       /*     CreateButton("Create Autocollider").button.onClick.AddListener(() =>
-            
+            CreateButton("Re/create Autocollider").button.onClick.AddListener(() =>            
             {
                 foreach (SkinnedMeshRenderer sm in smr)
                 {
-                         makeCollider(sm);// XXXX
+                         makeCollider(sm);
                 }
             });
-*/
- 
+                
+
         }
 
         private JSONClass extractPluginJSON(JSONNode file, string id)
@@ -419,11 +430,14 @@ namespace XPSLoader
 
                 rootObj.transform.parent = rescaleObj;
 
+
+                if(autoAddCollider.val)
+                {     
                 foreach (SkinnedMeshRenderer sm in smr)
                 {
-                         //makeCollider(sm);// XXXX
+                         makeCollider(sm);
                 }
-
+                }
                 refreshTransforms(subscene);
                 restoreBoneAdjustments();
                 CreateXPSModelUI(restore);
@@ -437,7 +451,7 @@ namespace XPSLoader
                 Destroy(rootObj);
             }
 
-         //   rootObj.transform.parent = containingAtom.freeControllers[0].transform;
+        
         }
 
         private void cleanupTransforms()
@@ -504,55 +518,72 @@ namespace XPSLoader
         public void makeCollider(SkinnedMeshRenderer rr)
         {
             Transform[] tt = rr.bones;
-
-            BoneWeight[] weights = rr.sharedMesh.boneWeights;
-            Dictionary<int, Transform> weightedBones = new Dictionary<int, Transform>();
-            foreach (BoneWeight bb in weights)
+            if (tt.Length > 0)
             {
-                if (!weightedBones.ContainsKey(bb.boneIndex0))
-                    weightedBones.Add(bb.boneIndex0, tt[bb.boneIndex0]);
-                if (!weightedBones.ContainsKey(bb.boneIndex1))
-                    weightedBones.Add(bb.boneIndex1, tt[bb.boneIndex1]);
-                if (!weightedBones.ContainsKey(bb.boneIndex0))
-                    weightedBones.Add(bb.boneIndex2, tt[bb.boneIndex2]);
-                if (!weightedBones.ContainsKey(bb.boneIndex0))
-                    weightedBones.Add(bb.boneIndex3, tt[bb.boneIndex3]);
-            }
+                BoneWeight[] weights = rr.sharedMesh.boneWeights;
 
-            foreach (KeyValuePair<int, Transform> etc in weightedBones)
-            {
-                //   Debug.DrawLine(etc.position, etc.parent.position, Color.red, 10000f); 
-                if (etc.Value.gameObject.GetComponent<CapsuleCollider>() == null)
+                int[] tris = rr.sharedMesh.triangles;
+                Vector3[] verts = rr.sharedMesh.vertices;
+
+                Dictionary<Transform, List<Vector3>> boneVerts = new Dictionary<Transform, List<Vector3>>();
+                Dictionary<Transform, List<int>> boneTris = new Dictionary<Transform, List<int>>();
+
+                for (int i = 0; i < tris.Length; i += 3)
                 {
+                    int v1 = tris[i];
+                    int v2 = tris[i + 1];
+                    int v3 = tris[i + 2];
 
-                    //cap.direction = 1;
+                    int b0 = weights[v1].boneIndex0;
+                    int b1 = weights[v2].boneIndex0;
+                    int b2 = weights[v3].boneIndex0;
 
-                    Vector3 direction = (etc.Value.position - etc.Value.parent.position);
-
-                    // First move center and bounds from bone space to local space
-
-                    // if(!direction.Equals(Vector3.zero))
+                    //this triangle is fully on this bone.
+                    if (b0 == b1 && b0 == b2)
                     {
-                        GameObject newColl = new GameObject(etc.Value.name + "collider");
-                        newColl.transform.position = etc.Value.position;
-                        newColl.transform.rotation = GetBoneFix(etc.Value, direction);
-                        newColl.transform.parent = etc.Value;
+                        if (!boneVerts.ContainsKey(tt[b0]))
+                            boneVerts[tt[b0]] = new List<Vector3>();
 
-                        CapsuleCollider cap = newColl.AddComponent<CapsuleCollider>();
-                        //Debug.DrawLine(etc.Value.position, etc.Value.parent.position, Color.red, 100000f);
-                        float dist = Vector3.Distance(etc.Value.position, etc.Value.parent.position) * etc.Value.worldToLocalMatrix.lossyScale.x;
-                        /*
-                                                if (Mathf.Abs(direction.x) > Mathf.Abs(direction.y) && Mathf.Abs(direction.x) > Mathf.Abs(direction.z))
-                                                    cap.direction = 0;
-                                                else if (Mathf.Abs(direction.y) > Mathf.Abs(direction.x) && Mathf.Abs(direction.y) > Mathf.Abs(direction.z))
-                                                    cap.direction = 1;
-                                                else if (Mathf.Abs(direction.z) > Mathf.Abs(direction.x) && Mathf.Abs(direction.z) > Mathf.Abs(direction.y))
-                                                    cap.direction = 2;
-                                                    */
-                        cap.height = dist;
-                        cap.radius = dist / 4;
+                        if (!boneTris.ContainsKey(tt[b0]))
+                            boneTris[tt[b0]] = new List<int>();
+
+                        int currentLength = boneVerts[tt[b0]].Count == 0 ? 0 : boneVerts[tt[b0]].Count - 1;
+
+                        boneVerts[tt[b0]].Add(rr.sharedMesh.bindposes[b0].MultiplyPoint3x4(verts[v1]));
+                        boneVerts[tt[b0]].Add(rr.sharedMesh.bindposes[b0].MultiplyPoint3x4(verts[v2]));
+                        boneVerts[tt[b0]].Add(rr.sharedMesh.bindposes[b0].MultiplyPoint3x4(verts[v3]));
+
+                        boneTris[tt[b0]].Add(currentLength);
+                        boneTris[tt[b0]].Add(currentLength + 1);
+                        boneTris[tt[b0]].Add(currentLength + 2);
                     }
+
                 }
+
+                foreach (KeyValuePair<Transform, List<Vector3>> etc in boneVerts)
+                {
+                    Mesh colMesh = new Mesh();
+                    colMesh.name = etc.Key.name + "_AutoCollider";
+                    colMesh.vertices = etc.Value.ToArray();
+                    colMesh.triangles = boneTris[etc.Key].ToArray();
+
+                    if (etc.Key.gameObject.GetComponent<MeshCollider>())
+                        Destroy(etc.Key.gameObject.GetComponent<MeshCollider>());
+
+
+                    MeshCollider mc = etc.Key.gameObject.AddComponent<MeshCollider>();
+                    mc.sharedMesh = colMesh;
+                    mc.convex = convexCollider.val;
+                }
+            }else
+            {
+                if (rr.gameObject.GetComponent<MeshCollider>())
+                    Destroy(rr.gameObject.GetComponent<MeshCollider>());
+
+                //so this a skinnedmesh without bones.. means an environment or something ismilar.. just build a regular mesh collider.                          
+                MeshCollider mc = rr.gameObject.AddComponent<MeshCollider>();
+                mc.sharedMesh = rr.sharedMesh;
+                mc.convex = convexCollider.val;
             }
         }
 
